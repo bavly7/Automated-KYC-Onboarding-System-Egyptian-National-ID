@@ -1,0 +1,17 @@
+ultralytics
+paddleocr
+paddlepaddle==3.1.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+insightface
+onnxruntime
+mediapipe
+opencv-python-headless
+numpy
+langgraph
+groq
+dotenv
+sqlalchemy
+fastapi 
+uvicorn 
+psycopg2-binary 
+python-multipart
+"pydantic[email]"

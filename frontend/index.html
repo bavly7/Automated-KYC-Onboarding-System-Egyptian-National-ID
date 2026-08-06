@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>KYC Capture UI (Production)</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 24px auto; padding: 0 16px; }
+  video { width: 100%; background: #000; border-radius: 4px; }
+  button { padding: 10px 14px; margin: 4px 4px 4px 0; font-size: 14px; cursor: pointer; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .status-row { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
+  .badge { font-weight: bold; }
+  .ok { color: #1a7f37; }
+  .pending { color: #9a6700; }
+  .bad { color: #cf222e; }
+  #instruction { font-size: 18px; font-weight: bold; min-height: 26px; color: #0056b3; }
+  #log { white-space: pre-wrap; background: #f6f8fa; padding: 10px; border-radius: 4px; font-size: 13px; max-height: 240px; overflow-y: auto; }
+  #result { background: #f6f8fa; padding: 10px; border-radius: 4px; }
+  #handoffPanel { background: #fff8e6; border: 1px solid #e0c264; padding: 12px; border-radius: 4px; margin-top: 8px; }
+  #handoffPanel input[type=email] { padding: 8px; font-size: 14px; width: 220px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+
+<h2>KYC Verification — Capture Flow</h2>
+
+<script>const API_BASE = "http://192.168.100.13:8000";</script>
+
+<video id="video" autoplay playsinline muted></video>
+<canvas id="canvas" style="display:none;"></canvas>
+
+<div id="instruction"></div>
+
+<div>
+  <button id="btnStart">1. Start Session</button>
+  <button id="btnLiveness" disabled>2. Capture & Verify Liveness</button>
+  <button id="btnSelfie" disabled>3. Capture Selfie</button>
+  <button id="btnFront" disabled>4. Capture Front ID</button>
+  <button id="btnBack" disabled>5. Capture Back ID</button>
+  <button id="btnSubmit" disabled>6. Submit Documents</button>
+</div>
+
+<h3>Capture status</h3>
+<div class="status-row">Session: <span id="sSession" class="badge pending">not started</span></div>
+<div class="status-row">Liveness: <span id="sLiveness" class="badge pending">0/3</span></div>
+<div class="status-row">Selfie: <span id="sSelfie" class="badge pending">0/1</span></div>
+<div class="status-row">Front ID: <span id="sFront" class="badge pending">0/10</span></div>
+<div class="status-row">Back ID: <span id="sBack" class="badge pending">0/10</span></div>
+
+<h3>Result</h3>
+<div id="result">— submit the payload to see a result —</div>
+
+<div id="handoffPanel" class="hidden">
+  <b>Verification needs another attempt.</b>
+  <p>Enter your email, then either retry right here, or send a link to continue on your phone.</p>
+  <div>
+    <input type="email" id="handoffEmail" placeholder="you@example.com" required />
+  </div>
+  <div style="margin-top:8px;">
+    <button id="btnRetryHere">Continue on this device</button>
+    <button id="btnRetryMobile">Send link to my phone</button>
+  </div>
+  <div id="handoffStatus" style="margin-top:8px;"></div>
+</div>
+
+<h3>Log</h3>
+<div id="log"></div>
+
+<script>
+let sessionId = null;
+let livenessInstructions = [];
+let frontFrames = [];
+let backFrames = [];
+let livenessFrames = [];
+let selfieFrame = null;
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+const urlParams = new URLSearchParams(window.location.search);
+const resumeSessionId = urlParams.get("session_id");
+const resumeToken = urlParams.get("token");
+
+function log(msg) {
+  const el = document.getElementById("log");
+  const time = new Date().toLocaleTimeString();
+  el.textContent += `[${time}] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function setBadge(id, text, cls) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = `badge ${cls}`;
+}
+
+function resetCaptureState() {
+  frontFrames = [];
+  backFrames = [];
+  livenessFrames = [];
+  selfieFrame = null;
+  setBadge("sLiveness", "0/3", "pending");
+  setBadge("sSelfie", "0/1", "pending");
+  setBadge("sFront", "0/10", "pending");
+  setBadge("sBack", "0/10", "pending");
+  document.getElementById("instruction").textContent = "";
+  document.getElementById("result").textContent = "— submit the payload to see a result —";
+  document.getElementById("handoffPanel").classList.add("hidden");
+  document.getElementById("handoffStatus").textContent = "";
+
+  document.getElementById("btnLiveness").disabled = false;
+  document.getElementById("btnSelfie").disabled = true;
+  document.getElementById("btnFront").disabled = true;
+  document.getElementById("btnBack").disabled = true;
+  document.getElementById("btnSubmit").disabled = true;
+}
+
+function enterCaptureFlow(id, instructions) {
+  sessionId = id;
+  livenessInstructions = instructions;
+  setBadge("sSession", sessionId, "ok");
+  log(`Session ready: ${sessionId}`);
+  log(`Liveness challenges: ${livenessInstructions.join(", ")}`);
+  resetCaptureState();
+  document.getElementById("btnStart").disabled = true;
+}
+
+async function initCamera() {
+  const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+  video.srcObject = stream;
+  await new Promise(resolve => (video.onloadedmetadata = resolve));
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+}
+
+function grabFrame(quality = 0.9) {
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  return new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", quality));
+}
+
+async function grabBurst(count, intervalMs) {
+  const frames = [];
+  for (let i = 0; i < count; i++) {
+    frames.push(await grabFrame());
+    if (i < count - 1) await new Promise(r => setTimeout(r, intervalMs));
+  }
+  return frames;
+}
+
+if (resumeSessionId && resumeToken) {
+  document.getElementById("btnStart").textContent = "1. Resume Session (from email link)";
+}
+
+document.getElementById("btnStart").onclick = async () => {
+  try {
+    await initCamera();
+    let data;
+    if (resumeSessionId && resumeToken) {
+      const res = await fetch(`${API_BASE}/sessions/${resumeSessionId}/resume?token=${encodeURIComponent(resumeToken)}`);
+      if (!res.ok) throw new Error(`Resume failed: ${res.status}`);
+      data = await res.json();
+    } else {
+      const res = await fetch(`${API_BASE}/sessions`, { method: "POST" });
+      if (!res.ok) throw new Error(`POST /sessions failed: ${res.status}`);
+      data = await res.json();
+    }
+    enterCaptureFlow(data.session_id, data.liveness_instructions);
+  } catch (err) {
+    log(`ERROR starting session: ${err.message}`);
+    alert("Could not start session — check backend connection.");
+  }
+};
+
+// ---------------------------------------------------------------------
+// Step 2 — Capture & Verify Liveness immediately (Fail-Fast)
+// ---------------------------------------------------------------------
+document.getElementById("btnLiveness").onclick = async () => {
+  document.getElementById("btnLiveness").disabled = true;
+  livenessFrames = [];
+  const instructionEl = document.getElementById("instruction");
+
+  for (let i = 0; i < livenessInstructions.length; i++) {
+    instructionEl.textContent = `${livenessInstructions[i]}  (capturing in 4s...)`;
+    await new Promise(r => setTimeout(r, 4000));
+    const frame = await grabFrame();
+    livenessFrames.push(frame);
+    log(`Liveness frame ${i + 1} captured`);
+  }
+
+  instructionEl.textContent = "Verifying liveness on server...";
+  log("Sending liveness frames to server for verification...");
+  
+  const form = new FormData();
+  livenessFrames.forEach((blob, i) => form.append("liveness_frames", blob, `liveness_${i}.jpg`));
+
+  try {
+    const res = await fetch(`${API_BASE}/sessions/${sessionId}/liveness`, { method: "POST", body: form });
+    const data = await res.json();
+
+    if (!res.ok || data.Status === "Failed" || data.Decision === "mobile_handoff_required") {
+      throw new Error(data.Reason || data.detail || "Liveness verification failed by server");
+    }
+    
+    setBadge("sLiveness", "Passed", "ok");
+    log("Liveness verified successfully!");
+    instructionEl.textContent = "Liveness verified! You can now capture your selfie.";
+    document.getElementById("btnSelfie").disabled = false;
+
+  } catch (err) {
+    log(`ERROR: ${err.message}`);
+    instructionEl.textContent = `Liveness failed: ${err.message}`;
+    setBadge("sLiveness", "Failed - Blocked", "bad");
+    
+    document.getElementById("btnSelfie").disabled = true;
+    document.getElementById("btnFront").disabled = true;
+    document.getElementById("btnBack").disabled = true;
+    document.getElementById("btnSubmit").disabled = true;
+    
+
+    document.getElementById("btnLiveness").disabled = false;
+  }
+};
+document.getElementById("btnSelfie").onclick = async () => {
+  document.getElementById("btnSelfie").disabled = true;
+  selfieFrame = await grabFrame(0.95);
+  setBadge("sSelfie", "1/1", "ok");
+  log("Selfie captured.");
+  document.getElementById("btnFront").disabled = false;
+};
+
+document.getElementById("btnFront").onclick = async () => {
+  document.getElementById("btnFront").disabled = true;
+  log("Capturing front ID (10 frames)...");
+  frontFrames = await grabBurst(10, 120);
+  setBadge("sFront", `${frontFrames.length}/10`, "ok");
+  log("Front ID captured.");
+  document.getElementById("btnBack").disabled = false;
+};
+
+document.getElementById("btnBack").onclick = async () => {
+  document.getElementById("btnBack").disabled = true;
+  log("Capturing back ID (10 frames)...");
+  backFrames = await grabBurst(10, 120);
+  setBadge("sBack", `${backFrames.length}/10`, "ok");
+  log("Back ID captured.");
+  document.getElementById("btnSubmit").disabled = false;
+};
+
+// ---------------------------------------------------------------------
+// Step 6 — Submit Document Payload (Liveness already saved on server)
+// ---------------------------------------------------------------------
+document.getElementById("btnSubmit").onclick = async () => {
+  document.getElementById("btnSubmit").disabled = true;
+  const resultEl = document.getElementById("result");
+  resultEl.textContent = "Uploading documents...";
+
+  const form = new FormData();
+  frontFrames.forEach((blob, i) => form.append("front_frames", blob, `front_${i}.jpg`));
+  backFrames.forEach((blob, i) => form.append("back_frames", blob, `back_${i}.jpg`));
+  form.append("selfie", selfieFrame, "selfie.jpg");
+
+  try {
+    const res = await fetch(`${API_BASE}/sessions/${sessionId}/upload`, { method: "POST", body: form });
+    if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+    log("Documents submitted. Polling for final result...");
+    pollStatus();
+  } catch (err) {
+    log(`ERROR submitting payload: ${err.message}`);
+    resultEl.textContent = `Upload error: ${err.message}`;
+    document.getElementById("btnSubmit").disabled = false;
+  }
+};
+
+async function pollStatus() {
+  const resultEl = document.getElementById("result");
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/status`);
+  const data = await res.json();
+
+  if (data.status === "pending" || data.status === "processing") {
+    resultEl.textContent = `Status: ${data.status}...`;
+    setTimeout(pollStatus, 2000);
+    return;
+  }
+
+  if (data.status === "error") {
+    resultEl.innerHTML = `<span class="bad">Pipeline error</span><br>${data.rejection_reason || ""}`;
+    log("Pipeline error.");
+    return;
+  }
+
+  const cls = data.decision === "approved" ? "ok" : (data.decision === "rejected" ? "bad" : "pending");
+  resultEl.innerHTML = `
+    <div><b>Decision:</b> <span class="${cls}">${data.decision}</span></div>
+    <div><b>Reason:</b> ${data.rejection_reason || "—"}</div>
+    <div><b>Face similarity:</b> ${data.face_similarity ?? "—"}</div>
+    <div><b>Extracted fields:</b> <pre>${JSON.stringify(data.extracted_fields, null, 2)}</pre></div>
+    <div><b>Mobile handoff required:</b> ${data.requires_mobile_handoff}</div>
+  `;
+  log(`Final decision: ${data.decision}`);
+
+  if (data.decision === "mobile_handoff_required") {
+    document.getElementById("handoffPanel").classList.remove("hidden");
+  }
+}
+
+async function requestHandoff(target) {
+  const email = document.getElementById("handoffEmail").value.trim();
+  const statusEl = document.getElementById("handoffStatus");
+  if (!email) return (statusEl.textContent = "Enter an email first.");
+
+  statusEl.textContent = "Submitting...";
+  try {
+    const res = await fetch(`${API_BASE}/sessions/${sessionId}/handoff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, target }),
+    });
+    if (!res.ok) throw new Error(`Handoff request failed: ${res.status}`);
+    const data = await res.json();
+
+    if (target === "this_device") {
+      log("Retrying on this device.");
+      livenessInstructions = data.liveness_instructions;
+      resetCaptureState();
+      statusEl.textContent = "Ready — capture again from the top.";
+    } else {
+      log(`Handoff link sent to ${email}.`);
+      statusEl.textContent = `Check ${email} on your phone to continue.`;
+      document.getElementById("btnLiveness").disabled = true;
+    }
+  } catch (err) {
+    statusEl.textContent = `Error: ${err.message}`;
+  }
+}
+
+document.getElementById("btnRetryHere").onclick = () => requestHandoff("this_device");
+document.getElementById("btnRetryMobile").onclick = () => requestHandoff("another_device");
+</script>
+
+</body>
+</html>
