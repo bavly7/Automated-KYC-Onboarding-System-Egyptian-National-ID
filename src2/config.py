@@ -10,10 +10,10 @@ load_dotenv(override=True)  # .env always wins over a stray OS-level env var of 
 
 # ---- Model weight paths -----------------------------------------------
 # Point these at your Models/ folder. Override via env vars in production.
-CARD_MODEL_PATH = os.environ.get("CARD_MODEL_PATH", "Models/best_card_detector.pt")
-FIELD_MODEL_PATH = os.environ.get("FIELD_MODEL_PATH", "Models/best_labels1.pt")
-FACE_LANDMARKER_PATH = os.environ.get("FACE_LANDMARKER_PATH", "Models/face_landmarker.task")
-POSE_LANDMARKER_PATH = os.environ.get("POSE_LANDMARKER_PATH", "Models/pose_landmarker.task")
+CARD_MODEL_PATH = os.environ.get("CARD_MODEL_PATH", "Models2/best_card_detector.pt")
+FIELD_MODEL_PATH = os.environ.get("FIELD_MODEL_PATH", "Models2/best_labels1.pt")
+FACE_LANDMARKER_PATH = os.environ.get("FACE_LANDMARKER_PATH", "Models2/face_landmarker.task")
+POSE_LANDMARKER_PATH = os.environ.get("POSE_LANDMARKER_PATH", "Models2/pose_landmarker.task")
 
 # ---- Field schema (Phase 0 decision) -----------------------------------
 TARGET_CLASSES = {"ID", "First_Name", "Last_Name", "Add2", "ExpDate"}

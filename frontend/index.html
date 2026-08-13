@@ -4,70 +4,175 @@
 <meta charset="UTF-8" />
 <title>KYC Capture UI (Production)</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 24px auto; padding: 0 16px; }
-  video { width: 100%; background: #000; border-radius: 4px; }
-  button { padding: 10px 14px; margin: 4px 4px 4px 0; font-size: 14px; cursor: pointer; }
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 24px auto; padding: 0 16px; background-color: #f8fafc; color: #1e293b; }
+  
+  /* Auth Styles */
+  #auth-panel { background: #ffffff; padding: 2.5rem; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border: 1px solid #e2e8f0; margin-bottom: 2rem; }
+  .tabs { display: flex; margin-bottom: 1.5rem; border-bottom: 2px solid #e2e8f0; }
+  .tab { flex: 1; text-align: center; padding: 0.75rem; cursor: pointer; color: #64748b; font-weight: 600; }
+  .tab.active { color: #0284c7; border-bottom: 2px solid #0284c7; }
+  .input-group { margin-bottom: 1.25rem; }
+  .input-group label { display: block; margin-bottom: 0.5rem; font-size: 0.875rem; font-weight: 500; }
+  .input-group input { width: 100%; padding: 0.75rem; border-radius: 6px; border: 1px solid #cbd5e1; outline: none; box-sizing: border-box; }
+  .auth-btn { width: 100%; padding: 0.75rem; border: none; border-radius: 6px; background: #0ea5e9; color: white; font-weight: bold; cursor: pointer; }
+  .auth-btn:hover { background: #0284c7; }
+  
+  /* KYC Styles */
+  #kyc-panel { display: none; }
+  video { width: 100%; background: #000; border-radius: 8px; margin-bottom: 1rem; }
+  button { padding: 10px 14px; margin: 4px 4px 4px 0; font-size: 14px; cursor: pointer; border: none; border-radius: 4px; background: #334155; color: white; font-weight: 500;}
   button:disabled { opacity: 0.4; cursor: not-allowed; }
-  .status-row { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
-  .badge { font-weight: bold; }
-  .ok { color: #1a7f37; }
-  .pending { color: #9a6700; }
-  .bad { color: #cf222e; }
-  #instruction { font-size: 18px; font-weight: bold; min-height: 26px; color: #0056b3; }
-  #log { white-space: pre-wrap; background: #f6f8fa; padding: 10px; border-radius: 4px; font-size: 13px; max-height: 240px; overflow-y: auto; }
-  #result { background: #f6f8fa; padding: 10px; border-radius: 4px; }
-  #handoffPanel { background: #fff8e6; border: 1px solid #e0c264; padding: 12px; border-radius: 4px; margin-top: 8px; }
-  #handoffPanel input[type=email] { padding: 8px; font-size: 14px; width: 220px; }
-  .hidden { display: none; }
+  button:not(:disabled):hover { background: #475569; }
+  #btnStart { background: #0ea5e9; }
+  .status-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; font-size: 14px;}
+  .badge { font-weight: bold; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+  .ok { color: #15803d; background: #dcfce7; }
+  .pending { color: #b45309; background: #fef3c7; }
+  .bad { color: #b91c1c; background: #fee2e2; }
+  #instruction { font-size: 18px; font-weight: bold; min-height: 26px; color: #0284c7; margin-bottom: 1rem; text-align: center; }
+  #log { white-space: pre-wrap; background: #1e293b; color: #38bdf8; padding: 10px; border-radius: 8px; font-size: 12px; max-height: 240px; overflow-y: auto; font-family: monospace; margin-top: 1rem;}
+  #result { background: #ffffff; padding: 16px; border-radius: 8px; border: 1px solid #e2e8f0; margin-top: 1rem;}
+  #handoffPanel { background: #fef9c3; border: 1px solid #fde047; padding: 16px; border-radius: 8px; margin-top: 16px; }
+  #handoffPanel input[type=email] { padding: 8px; font-size: 14px; width: 100%; margin-bottom: 8px; border: 1px solid #cbd5e1; border-radius: 4px; box-sizing: border-box;}
+  .hidden { display: none !important; }
 </style>
 </head>
 <body>
 
-<h2>KYC Verification — Capture Flow</h2>
-
-<script>const API_BASE = "http://192.168.100.13:8000";</script>
-
-<video id="video" autoplay playsinline muted></video>
-<canvas id="canvas" style="display:none;"></canvas>
-
-<div id="instruction"></div>
-
-<div>
-  <button id="btnStart">1. Start Session</button>
-  <button id="btnLiveness" disabled>2. Capture & Verify Liveness</button>
-  <button id="btnSelfie" disabled>3. Capture Selfie</button>
-  <button id="btnFront" disabled>4. Capture Front ID</button>
-  <button id="btnBack" disabled>5. Capture Back ID</button>
-  <button id="btnSubmit" disabled>6. Submit Documents</button>
+<!-- Authentication Panel -->
+<div id="auth-panel">
+    <h2 style="text-align: center; margin-bottom: 1rem;">Welcome to KYC Portal</h2>
+    <div class="tabs">
+        <div class="tab active" onclick="switchTab('login')">Login</div>
+        <div class="tab" onclick="switchTab('signup')">Sign Up</div>
+    </div>
+    <form id="auth-form" onsubmit="handleAuth(event)">
+        <div class="input-group">
+            <label>Email Address</label>
+            <input type="email" id="email" required placeholder="user@example.com">
+        </div>
+        <div class="input-group">
+            <label>Password</label>
+            <input type="password" id="password" required placeholder="••••••••">
+        </div>
+        <button type="submit" class="auth-btn" id="btn-text">Login</button>
+    </form>
+    <div id="auth-msg" style="margin-top: 1rem; text-align: center; font-size: 14px;"></div>
 </div>
 
-<h3>Capture status</h3>
-<div class="status-row">Session: <span id="sSession" class="badge pending">not started</span></div>
-<div class="status-row">Liveness: <span id="sLiveness" class="badge pending">0/3</span></div>
-<div class="status-row">Selfie: <span id="sSelfie" class="badge pending">0/1</span></div>
-<div class="status-row">Front ID: <span id="sFront" class="badge pending">0/10</span></div>
-<div class="status-row">Back ID: <span id="sBack" class="badge pending">0/10</span></div>
+<!-- KYC Capture Flow Panel -->
+<div id="kyc-panel">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <h2>KYC Verification</h2>
+        <button onclick="logout()" style="background: #ef4444; padding: 6px 12px;">Logout</button>
+    </div>
 
-<h3>Result</h3>
-<div id="result">— submit the payload to see a result —</div>
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas" style="display:none;"></canvas>
 
-<div id="handoffPanel" class="hidden">
-  <b>Verification needs another attempt.</b>
-  <p>Enter your email, then either retry right here, or send a link to continue on your phone.</p>
-  <div>
-    <input type="email" id="handoffEmail" placeholder="you@example.com" required />
-  </div>
-  <div style="margin-top:8px;">
-    <button id="btnRetryHere">Continue on this device</button>
-    <button id="btnRetryMobile">Send link to my phone</button>
-  </div>
-  <div id="handoffStatus" style="margin-top:8px;"></div>
+    <div id="instruction"></div>
+
+    <div style="display: flex; flex-wrap: wrap;">
+      <button id="btnStart">1. Start Session</button>
+      <button id="btnLiveness" disabled>2. Capture Liveness</button>
+      <button id="btnSelfie" disabled>3. Selfie</button>
+      <button id="btnFront" disabled>4. Front ID</button>
+      <button id="btnBack" disabled>5. Back ID</button>
+      <button id="btnSubmit" disabled style="background: #10b981;">6. Submit Payload</button>
+    </div>
+
+    <div style="background: #ffffff; padding: 12px; border-radius: 8px; margin-top: 1rem; border: 1px solid #e2e8f0;">
+        <h3 style="margin-top: 0;">Status Checklist</h3>
+        <div class="status-row">Session ID: <span id="sSession" class="badge pending">not started</span></div>
+        <div class="status-row">Liveness Check: <span id="sLiveness" class="badge pending">0/3</span></div>
+        <div class="status-row">Selfie: <span id="sSelfie" class="badge pending">0/1</span></div>
+        <div class="status-row">Front ID: <span id="sFront" class="badge pending">0/10</span></div>
+        <div class="status-row">Back ID: <span id="sBack" class="badge pending">0/10</span></div>
+    </div>
+
+    <h3>Result Decision</h3>
+    <div id="result">— complete steps above to see result —</div>
+
+    <div id="handoffPanel" class="hidden">
+      <b>Verification needs another attempt.</b>
+      <p style="font-size: 14px; color: #475569;">Enter your email, then either retry right here, or send a link to continue on your phone.</p>
+      <div>
+        <input type="email" id="handoffEmail" placeholder="you@example.com" required />
+      </div>
+      <div>
+        <button id="btnRetryHere" style="background: #0ea5e9;">Continue here</button>
+        <button id="btnRetryMobile" style="background: #f59e0b;">Send link to phone</button>
+      </div>
+      <div id="handoffStatus" style="margin-top:8px; font-weight: bold;"></div>
+    </div>
+
+    <h3>System Logs</h3>
+    <div id="log"></div>
 </div>
-
-<h3>Log</h3>
-<div id="log"></div>
 
 <script>
+// --- Configuration ---
+const API_BASE = "http://127.0.0.1:8000"; // Make sure to change to your IP for mobile handoff (e.g., http://192.168.x.x:8000)
+let currentMode = "login";
+
+// --- Auth Logic ---
+function switchTab(mode) {
+    currentMode = mode;
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    event.target.classList.add('active');
+    document.getElementById('btn-text').innerText = mode === 'login' ? 'Login' : 'Sign Up';
+    document.getElementById('auth-msg').innerText = '';
+}
+
+async function handleAuth(e) {
+    e.preventDefault();
+    const email = document.getElementById('email').value;
+    const password = document.getElementById('password').value;
+    const msgDiv = document.getElementById('auth-msg');
+
+    msgDiv.innerText = "Processing...";
+    msgDiv.style.color = "#475569";
+
+    const endpoint = currentMode === 'login' ? '/auth/login' : '/auth/signup';
+    try {
+        const res = await fetch(`${API_BASE}${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password })
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Authentication failed');
+
+        localStorage.setItem('kyc_token', data.access_token);
+        msgDiv.style.color = "#15803d";
+        msgDiv.innerText = "Success! Initializing camera...";
+        
+        setTimeout(showKYCPanel, 500);
+    } catch (err) {
+        msgDiv.style.color = "#b91c1c";
+        msgDiv.innerText = err.message;
+    }
+}
+
+function showKYCPanel() {
+    document.getElementById('auth-panel').style.display = 'none';
+    document.getElementById('kyc-panel').style.display = 'block';
+}
+
+function logout() {
+    localStorage.removeItem('kyc_token');
+    document.getElementById('auth-panel').style.display = 'block';
+    document.getElementById('kyc-panel').style.display = 'none';
+}
+
+// Auto-check auth state on load
+if (localStorage.getItem('kyc_token')) {
+    showKYCPanel();
+}
+
+
+// --- KYC Capture Logic ---
 let sessionId = null;
 let livenessInstructions = [];
 let frontFrames = [];
@@ -106,7 +211,7 @@ function resetCaptureState() {
   setBadge("sFront", "0/10", "pending");
   setBadge("sBack", "0/10", "pending");
   document.getElementById("instruction").textContent = "";
-  document.getElementById("result").textContent = "— submit the payload to see a result —";
+  document.getElementById("result").textContent = "— complete steps above to see result —";
   document.getElementById("handoffPanel").classList.add("hidden");
   document.getElementById("handoffStatus").textContent = "";
 
@@ -150,32 +255,39 @@ async function grabBurst(count, intervalMs) {
 }
 
 if (resumeSessionId && resumeToken) {
-  document.getElementById("btnStart").textContent = "1. Resume Session (from email link)";
+  document.getElementById("btnStart").textContent = "1. Resume Session (from email)";
 }
 
 document.getElementById("btnStart").onclick = async () => {
   try {
     await initCamera();
+    const token = localStorage.getItem('kyc_token');
     let data;
+    
     if (resumeSessionId && resumeToken) {
       const res = await fetch(`${API_BASE}/sessions/${resumeSessionId}/resume?token=${encodeURIComponent(resumeToken)}`);
       if (!res.ok) throw new Error(`Resume failed: ${res.status}`);
       data = await res.json();
     } else {
-      const res = await fetch(`${API_BASE}/sessions`, { method: "POST" });
+      // Attached JWT Token here!
+      const res = await fetch(`${API_BASE}/sessions`, { 
+          method: "POST",
+          headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.status === 401) {
+          logout();
+          throw new Error("Session expired. Please login again.");
+      }
       if (!res.ok) throw new Error(`POST /sessions failed: ${res.status}`);
       data = await res.json();
     }
     enterCaptureFlow(data.session_id, data.liveness_instructions);
   } catch (err) {
     log(`ERROR starting session: ${err.message}`);
-    alert("Could not start session — check backend connection.");
+    alert(`Could not start session: ${err.message}`);
   }
 };
 
-// ---------------------------------------------------------------------
-// Step 2 — Capture & Verify Liveness immediately (Fail-Fast)
-// ---------------------------------------------------------------------
 document.getElementById("btnLiveness").onclick = async () => {
   document.getElementById("btnLiveness").disabled = true;
   livenessFrames = [];
@@ -211,17 +323,16 @@ document.getElementById("btnLiveness").onclick = async () => {
   } catch (err) {
     log(`ERROR: ${err.message}`);
     instructionEl.textContent = `Liveness failed: ${err.message}`;
-    setBadge("sLiveness", "Failed - Blocked", "bad");
+    setBadge("sLiveness", "Failed", "bad");
     
     document.getElementById("btnSelfie").disabled = true;
     document.getElementById("btnFront").disabled = true;
     document.getElementById("btnBack").disabled = true;
     document.getElementById("btnSubmit").disabled = true;
-    
-
     document.getElementById("btnLiveness").disabled = false;
   }
 };
+
 document.getElementById("btnSelfie").onclick = async () => {
   document.getElementById("btnSelfie").disabled = true;
   selfieFrame = await grabFrame(0.95);
@@ -248,9 +359,6 @@ document.getElementById("btnBack").onclick = async () => {
   document.getElementById("btnSubmit").disabled = false;
 };
 
-// ---------------------------------------------------------------------
-// Step 6 — Submit Document Payload (Liveness already saved on server)
-// ---------------------------------------------------------------------
 document.getElementById("btnSubmit").onclick = async () => {
   document.getElementById("btnSubmit").disabled = true;
   const resultEl = document.getElementById("result");
@@ -285,22 +393,22 @@ async function pollStatus() {
   }
 
   if (data.status === "error") {
-    resultEl.innerHTML = `<span class="bad">Pipeline error</span><br>${data.rejection_reason || ""}`;
+    resultEl.innerHTML = `<span class="bad" style="font-weight:bold;">Pipeline error</span><br><pre style="font-size:12px;">${data.rejection_reason || ""}</pre>`;
     log("Pipeline error.");
     return;
   }
 
   const cls = data.decision === "approved" ? "ok" : (data.decision === "rejected" ? "bad" : "pending");
   resultEl.innerHTML = `
-    <div><b>Decision:</b> <span class="${cls}">${data.decision}</span></div>
-    <div><b>Reason:</b> ${data.rejection_reason || "—"}</div>
-    <div><b>Face similarity:</b> ${data.face_similarity ?? "—"}</div>
-    <div><b>Extracted fields:</b> <pre>${JSON.stringify(data.extracted_fields, null, 2)}</pre></div>
-    <div><b>Mobile handoff required:</b> ${data.requires_mobile_handoff}</div>
+    <div><b>Decision:</b> <span class="badge ${cls}" style="font-size:14px;">${data.decision}</span></div>
+    <div style="margin-top:8px;"><b>Reason:</b> ${data.rejection_reason || "—"}</div>
+    <div style="margin-top:8px;"><b>Face similarity:</b> ${data.face_similarity ?? "—"}</div>
+    <div style="margin-top:8px;"><b>Extracted fields:</b> <pre style="background:#f1f5f9; padding:8px; border-radius:4px; font-size:12px;">${JSON.stringify(data.extracted_fields, null, 2)}</pre></div>
+    <div style="margin-top:8px;"><b>Mobile handoff required:</b> ${data.requires_mobile_handoff}</div>
   `;
   log(`Final decision: ${data.decision}`);
 
-  if (data.decision === "mobile_handoff_required") {
+  if (data.decision === "mobile_handoff_required" || data.requires_mobile_handoff) {
     document.getElementById("handoffPanel").classList.remove("hidden");
   }
 }
@@ -310,7 +418,7 @@ async function requestHandoff(target) {
   const statusEl = document.getElementById("handoffStatus");
   if (!email) return (statusEl.textContent = "Enter an email first.");
 
-  statusEl.textContent = "Submitting...";
+  statusEl.textContent = "Submitting request...";
   try {
     const res = await fetch(`${API_BASE}/sessions/${sessionId}/handoff`, {
       method: "POST",

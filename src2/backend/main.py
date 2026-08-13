@@ -6,10 +6,13 @@ import traceback
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Literal
+from typing import List, Literal, Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends
+import jwt
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer
+from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
@@ -17,22 +20,64 @@ from src2 import config
 from src2.graph.build_graph import build_kyc_graph
 from src2.graph.nodes import KYCEngines, liveness_check_node  
 from src2.db.session import SessionLocal, init_db, get_db
-from src2.db.models import KYCSession
+from src2.db.models import KYCSession, User
 from src2.backend.email_utils import send_handoff_email
 
+# Environment Configuration
 UPLOAD_ROOT = Path(os.environ.get("UPLOAD_ROOT", "uploads"))
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "super-secret-key-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 Hours
 
-app = FastAPI(title="KYC Verification API")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+
+app = FastAPI(title="Production KYC Verification API")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+# ---------------------------------------------------------------------------
+# Auth Utilities & Dependencies
+# ---------------------------------------------------------------------------
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def get_current_user(token: Optional[str] = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> Optional[User]:
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            return None
+    except jwt.PyJWTError:
+        return None
+    
+    return db.query(User).filter(User.id == user_id).first()
+
+
+# ---------------------------------------------------------------------------
+# Application Startup
+# ---------------------------------------------------------------------------
 @app.on_event("startup")
 def on_startup():
     init_db()
@@ -40,32 +85,90 @@ def on_startup():
     app.state.graph = build_kyc_graph(app.state.engines, SessionLocal)
 
 
+# ---------------------------------------------------------------------------
+# Auth Endpoints
+# ---------------------------------------------------------------------------
+class AuthRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+@app.post("/auth/signup")
+def signup(body: AuthRequest, db: Session = Depends(get_db)):
+    existing_user = db.query(User).filter(User.email == body.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    new_user = User(
+        email=body.email,
+        hashed_password=hash_password(body.password)
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    token = create_access_token({"sub": new_user.id})
+    return {"access_token": token, "token_type": "bearer", "user_id": new_user.id}
+
+
+@app.post("/auth/login")
+def login(body: AuthRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == body.email).first()
+    if not user or not verify_password(body.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    token = create_access_token({"sub": user.id})
+    return {"access_token": token, "token_type": "bearer", "user_id": user.id}
+
+
+# ---------------------------------------------------------------------------
+# KYC Session Endpoints
+# ---------------------------------------------------------------------------
 @app.post("/sessions")
-def create_session(db: Session = Depends(get_db)):
+def create_session(
+    current_user: Optional[User] = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+
+    if current_user:
+        existing_session = db.query(KYCSession).filter(
+            KYCSession.user_id == current_user.id,
+            KYCSession.status == "pending"
+        ).order_by(KYCSession.created_at.desc()).first()
+
+        
+        if existing_session:
+            return {
+                "session_id": existing_session.id, 
+                "liveness_instructions": existing_session.liveness_instructions
+            }
+
+  
     instructions = random.sample(config.LIVENESS_INSTRUCTIONS, config.LIVENESS_NUM_CHALLENGES)
-    session_row = KYCSession(status="pending", liveness_instructions=instructions)
+    session_row = KYCSession(
+        status="pending",
+        liveness_instructions=instructions,
+        user_id=current_user.id if current_user else None
+    )
     db.add(session_row)
     db.commit()
     db.refresh(session_row)
+    
     return {"session_id": session_row.id, "liveness_instructions": instructions}
-
-
-def _save_upload(file: UploadFile, dest_dir: Path, keep_original_name: bool = False) -> str:
+def _save_upload(file: UploadFile, dest_dir: Path, idx: Optional[int] = None) -> str:
     dest_dir.mkdir(parents=True, exist_ok=True)
-
-    if keep_original_name:
-        dest_path = dest_dir / file.filename
+    # Prefix filename with 2-digit index to preserve chronological frame ordering
+    if idx is not None:
+        filename = f"{idx:02d}_{file.filename}"
     else:
-        dest_path = dest_dir / f"{uuid.uuid4().hex}_{file.filename}"
+        filename = f"{uuid.uuid4().hex}_{file.filename}"
         
+    dest_path = dest_dir / filename
     with dest_path.open("wb") as f:
         shutil.copyfileobj(file.file, f)
     return str(dest_path)
 
 
-# ---------------------------------------------------------------------------
-# POST /sessions/{id}/liveness — Fail-Fast Liveness Check
-# ---------------------------------------------------------------------------
 @app.post("/sessions/{session_id}/liveness")
 def verify_liveness(
     session_id: str,
@@ -85,7 +188,7 @@ def verify_liveness(
     if liveness_dir.exists():
         shutil.rmtree(liveness_dir)
         
-    liveness_paths = [_save_upload(f, liveness_dir, keep_original_name=True) for f in liveness_frames]
+    liveness_paths = [_save_upload(f, liveness_dir, idx=i) for i, f in enumerate(liveness_frames)]
     
     liveness_func = liveness_check_node(app.state.engines)
     temp_state = {
@@ -106,11 +209,9 @@ def verify_liveness(
     return {"status": "success", "message": "Liveness verified"}
 
 
-# ---------------------------------------------------------------------------
-# POST /sessions/{id}/upload — Complete Documents
-# ---------------------------------------------------------------------------
 def _run_pipeline(session_id: str, initial_state: dict):
     db = SessionLocal()
+    session_dir = UPLOAD_ROOT / session_id
     try:
         graph = app.state.graph
         final_state = graph.invoke(initial_state)
@@ -135,6 +236,12 @@ def _run_pipeline(session_id: str, initial_state: dict):
             db.commit()
     finally:
         db.close()
+        # Privacy-by-Design: Purge uploaded raw sensitive images after pipeline completion
+        if session_dir.exists():
+            try:
+                shutil.rmtree(session_dir)
+            except Exception as e:
+                print(f"[Cleanup Error] Failed to delete session files for {session_id}: {e}")
 
 
 @app.post("/sessions/{session_id}/upload")
@@ -158,10 +265,14 @@ def upload_session(
     if not liveness_dir.exists():
         raise HTTPException(status_code=400, detail="Liveness frames missing. Please complete the liveness step first.")
 
+    # Slice incoming streams to strictly 10 frames max
+    front_frames = front_frames[:10]
+    back_frames = back_frames[:10]
+
     liveness_paths = sorted([str(p) for p in liveness_dir.glob("*")])
 
-    front_paths = [_save_upload(f, session_dir / "front") for f in front_frames]
-    back_paths = [_save_upload(f, session_dir / "back") for f in back_frames]
+    front_paths = [_save_upload(f, session_dir / "front", idx=i) for i, f in enumerate(front_frames)]
+    back_paths = [_save_upload(f, session_dir / "back", idx=i) for i, f in enumerate(back_frames)]
     selfie_path = _save_upload(selfie, session_dir / "selfie")
 
     initial_state = {

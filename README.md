@@ -279,3 +279,10 @@ flooding manual review with false positives.
 - Containerize with Docker Compose (backend + Postgres + model inference)
 - Rate-limit `needs_retake`/handoff attempts at the API layer
 
+
+## What's New in Version 2 🚀
+
+- **Production-Ready Backend & Auth**: Migrated from local SQLite to Supabase PostgreSQL, integrated JWT-based authentication (`/signup`, `/login`), and secured password hashing using `bcrypt`.
+- **Session Continuity**: Upgraded KYC session handling so returning users safely resume their active `pending` sessions without duplicating database records.
+- **Robust Environment Config**: Cleaned up connection parameters and path mappings for smooth multi-environment deployments.
+
