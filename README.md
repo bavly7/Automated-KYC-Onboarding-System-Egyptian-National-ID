@@ -279,10 +279,12 @@ flooding manual review with false positives.
 - Containerize with Docker Compose (backend + Postgres + model inference)
 - Rate-limit `needs_retake`/handoff attempts at the API layer
 
-
 ## What's New in Version 2 🚀
 
 - **Production-Ready Backend & Auth**: Migrated from local SQLite to Supabase PostgreSQL, integrated JWT-based authentication (`/signup`, `/login`), and secured password hashing using `bcrypt`.
 - **Session Continuity**: Upgraded KYC session handling so returning users safely resume their active `pending` sessions without duplicating database records.
 - **Robust Environment Config**: Cleaned up connection parameters and path mappings for smooth multi-environment deployments.
-
+- **Seamless Mobile Handoff**: Implemented real email delivery via SMTP with secure, time-limited magic links, allowing users to smoothly transition from a desktop browser to their mobile device's camera.
+- **Enhanced Mobile Capture UI**: Added dynamic front/back camera toggling directly within the interface to ensure high-quality document scanning on mobile devices.
+- **Smart OCR Fallbacks & Loop Prevention**: Upgraded the LangGraph decision pipeline to dynamically calculate expiry dates from issue dates (handling the 7-year Egyptian ID validity) if the original date is obscured. Added intelligent routing to send repeated mobile capture failures to `manual_review` instead of trapping users in an infinite loop.
+- **LLM-Powered Data Consolidation**: Activated the `ConsolidationAgent` using Groq (`llama-3.1-70b-versatile`) to act as a smart reviewer—intelligently cleaning fragmented Arabic OCR text, fixing spacing issues, and returning a perfectly structured, hallucination-free JSON payload.

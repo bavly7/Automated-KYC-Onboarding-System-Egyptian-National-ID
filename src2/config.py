@@ -16,7 +16,7 @@ FACE_LANDMARKER_PATH = os.environ.get("FACE_LANDMARKER_PATH", "Models2/face_land
 POSE_LANDMARKER_PATH = os.environ.get("POSE_LANDMARKER_PATH", "Models2/pose_landmarker.task")
 
 # ---- Field schema (Phase 0 decision) -----------------------------------
-TARGET_CLASSES = {"ID", "First_Name", "Last_Name", "Add2", "ExpDate"}
+TARGET_CLASSES = {"ID", "First_Name", "Last_Name", "Add2", "ExpDate","IssueDate"}
 
 # ---- Detection / OCR thresholds ----------------------------------------
 CARD_DETECT_CONF = 0.25

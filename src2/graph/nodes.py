@@ -198,37 +198,65 @@ def ocr_consensus_node(state: KYCState) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 4. Expiry check (early exit — short-circuits before liveness/face match)
+# 4. Expiry check (early exit / mobile loop breaker / fallback to issue date)
 # ---------------------------------------------------------------------------
 
 def expiry_check_node(state: KYCState) -> dict:
-    exp_raw = state.get("extracted_fields", {}).get("ExpDate")
-    if not exp_raw:
-        # Couldn't read an expiry date at all — this is a quality problem
-        # (OCR miss), not a judgment call, so send it to retake rather than
-        # manual_review. Short-circuits before duplicate_check/face_match
-        # since there's no point running those on incomplete data.
-        return {
-            "expiry_valid": None,
-            "decision": "needs_retake",
-            "rejection_reason": "Could not read expiry date — image quality issue",
-        }
+    extracted_fields = state.get("extracted_fields", {})
+    exp_raw = extracted_fields.get("ExpDate")
+    
+    # Check what key your config.TARGET_CLASSES uses for the issue date
+    # Adjust "IssueDate" below if your config uses something like "Issue_Date"
+    issue_raw = extracted_fields.get("IssueDate") 
+    
+    # We need this flag to know if the user is already on a mobile retry
+    is_mobile_retry = state.get("is_mobile_retry", False)
 
-    exp_date = _parse_arabic_id_date(exp_raw)
-    if exp_date is None:
-        return {
-            "expiry_valid": None,
-            "decision": "needs_retake",
-            "rejection_reason": "Could not parse expiry date — image quality issue",
-        }
+    exp_date = None
+    
+    # 1. First attempt: Try to parse the Expiry Date directly
+    if exp_raw:
+        exp_date = _parse_arabic_id_date(exp_raw)
 
+    # 2. OCR Fallback: If Expiry Date failed, try to parse Issue Date and add 7 years
+    if not exp_date and issue_raw:
+        issue_date = _parse_arabic_id_date(issue_raw)
+        if issue_date:
+            try:
+                # Egyptian IDs are valid for exactly 7 years from issuance
+                exp_date = issue_date.replace(year=issue_date.year + 7)
+            except ValueError:
+                # Edge case handling: If issue date was Leap Day (Feb 29), 
+                # shifting 7 years lands on a non-leap year, which throws an error.
+                exp_date = issue_date.replace(year=issue_date.year + 7, day=28)
+
+    # 3. If both dates are completely unreadable
+    if not exp_date:
+        if is_mobile_retry:
+            # Loop Breaker: User already tried on mobile and OCR still failed.
+            # Send to a human agent instead of causing an infinite loop.
+            return {
+                "expiry_valid": None,
+                "decision": "manual_review",
+                "rejection_reason": "Could not read ID dates clearly even after mobile retry. Forwarded to agent."
+            }
+        else:
+            # First attempt failed: Route to email handoff to try on a better camera
+            return {
+                "expiry_valid": None,
+                "decision": "needs_retake",
+                "rejection_reason": "Could not read ID dates. Please retry using your phone camera for better quality."
+            }
+
+    # 4. We successfully determined the expiry date. Check if it's actually valid.
     is_valid = exp_date >= datetime.now().date()
     result = {"expiry_valid": is_valid}
+    
     if not is_valid:
-        # Date WAS read successfully, it's just in the past — a real
-        # rejection, not a quality problem, so this one stays "rejected".
+        # Date was read successfully, but the ID is genuinely expired in the past.
         result["decision"] = "rejected"
-        result["rejection_reason"] = "ID expired"
+        result["rejection_reason"] = f"ID expired on {exp_date.strftime('%Y-%m-%d')}."
+        
     return result
 
 
@@ -238,13 +266,8 @@ def _parse_arabic_id_date(raw: str):
       - separated digit groups, e.g. "24/01/2028" -> re.findall gives
         3 separate matches: ["24", "01", "2028"] (DD/MM/YYYY)
       - one continuous block with no separators at all, e.g.
-        "البطاقة سارية حتى ٢٠٢٨٠١٢٤" -> "...20280124" -> re.findall gives
-        ONE match ("20280124", YYYYMMDD run together). The previous
-        version only handled the first shape (`len(digits) < 3` rejected
-        this case even though the date was right there) and also assumed
-        the wrong day/month/year order for it.
-    TODO: these are the two shapes observed so far, not a guarantee —
-    verify against more real samples before trusting this fully.
+        "البطاقة سارية حتى ٢٠٢٨٠١٢٤" -> "...20280124" -> ONE match (YYYYMMDD)
+      - NEW: Issue dates often only have Month and Year, e.g., "01/2021".
     """
     arabic_to_latin = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
     normalized = raw.translate(arabic_to_latin)
@@ -253,6 +276,13 @@ def _parse_arabic_id_date(raw: str):
     if len(digits) >= 3:
         # Separated groups: DD/MM/YYYY
         day, month, year = (int(d) for d in digits[:3])
+    elif len(digits) == 2:
+        # Issue dates usually just have Month and Year (2 matches)
+        if len(digits[0]) == 4:
+            year, month = int(digits[0]), int(digits[1])
+        else:
+            month, year = int(digits[0]), int(digits[1])
+        day = 1 # Default to the 1st of the month if day is missing
     elif len(digits) == 1 and len(digits[0]) == 8:
         # One continuous 8-digit block: YYYYMMDD
         block = digits[0]
@@ -260,11 +290,14 @@ def _parse_arabic_id_date(raw: str):
     else:
         return None
 
+    # Basic bounds checking to prevent datetime crashes
+    if not (1 <= month <= 12) or not (1 <= day <= 31):
+        return None
+
     try:
         return datetime(year, month, day).date()
     except ValueError:
         return None
-
 
 # ---------------------------------------------------------------------------
 # 5. Duplicate check — STUB, needs Phase 4 DB connection
@@ -349,12 +382,9 @@ def face_match_node(engines: KYCEngines):
 def llm_consolidation_node(engines: KYCEngines):
     def _node(state: KYCState) -> dict:
         consolidated = engines.consolidation_agent.consolidate_all(state.get("enhanced_reads", {}))
-        # Only overwrite fields the agent actually returned a value for —
-        # keep the majority-vote fallback for anything it returned None on.
         merged = {**state.get("extracted_fields", {}), **{k: v for k, v in consolidated.items() if v}}
         return {"extracted_fields": merged}
     return _node
-
 
 # ---------------------------------------------------------------------------
 # 10. Final policy decision

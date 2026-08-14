@@ -13,6 +13,7 @@ sqlalchemy
 fastapi 
 uvicorn 
 psycopg2-binary 
+langchain_groq
 python-multipart
 "pydantic[email]"
 pyjwt passlib[bcrypt]

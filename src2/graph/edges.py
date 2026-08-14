@@ -31,10 +31,20 @@ def route_after_face_match(state: KYCState) -> str:
 
 def route_after_expiry_check(state: KYCState) -> str:
     decision = state.get("decision")
+    
+    # ID is expired (Terminal state)
     if decision == "rejected":
         return "end"
+        
+    # Unreadable dates on the first attempt (Routes to email_handoff)
     if decision == "needs_retake":
         return "email_handoff"
+        
+    # Unreadable dates on a mobile retry (Terminal state -> Human Queue)
+    if decision == "manual_review":
+        return "end" 
+        
+    # Expiry is valid, proceed to the next automated check
     return "duplicate_check"
 
 
